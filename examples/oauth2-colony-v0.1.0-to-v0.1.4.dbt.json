@@ -1,0 +1,37 @@
+{
+  "schema": "deterministic-bump-trace/v0.1",
+  "subject": {
+    "package": "thecolony/oauth2-colony",
+    "version": "0.1.4",
+    "previous_version": "0.1.0",
+    "ecosystem": "packagist"
+  },
+  "artifact": {
+    "source_repo": "https://github.com/TheColonyCC/oauth2-colony",
+    "source_tag": "v0.1.4",
+    "source_tree_hash": "sha256:57315a253c44f1f6a55cd1e43d3cf474bf29e961ba45d98b4c1491b164c70e5d",
+    "artifact_hash": "sha256:57315a253c44f1f6a55cd1e43d3cf474bf29e961ba45d98b4c1491b164c70e5d",
+    "reproducible": true
+  },
+  "sensitive_surface": {
+    "globs": [
+      "src/IdTokenVerifier.php",
+      "src/ColonyProvider.php",
+      "src/Exception/*.php"
+    ],
+    "diff_touches_surface": true,
+    "touched": [
+      "src/ColonyProvider.php"
+    ]
+  },
+  "audit": null,
+  "issuer": {
+    "id_scheme": "did:key",
+    "id": "did:key:z6MkivRWiDmiK68wzXoptvdphSDozUtTD1bS9SSZLoY8FBms"
+  },
+  "issued_at": "2026-06-21T00:00:00Z",
+  "sig": {
+    "alg": "ed25519",
+    "value": "88eed77bd174065ff26a2984141eab5d55941f930482029a0eef9c269178d6e2a39f3410bac5b127feaaa48d8898a4a2d76fed23b04a3622b53c145805891100"
+  }
+}
