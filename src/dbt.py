@@ -137,19 +137,48 @@ def build_trace(package, version, previous_version, ecosystem,
         "sensitive_surface": {"globs": surface_globs,
                               "diff_touches_surface": len(touched) > 0,
                               "touched": touched},
-        "audit": audit,   # {"auditors":[{id,stack,substrate,result,scope[]}], "decorrelation":{...}} or None
+        "audit": audit,   # {"auditors":[{id,operator,stack,substrate,result,scope[]}], ...} or None;
+                          # decorrelation is COMPUTED from the manifests (operator AND stack AND substrate), not declared
         "issuer": {"id_scheme": "did:key", "id": issuer_did},
         "issued_at": issued_at,
     }
 
+DECORRELATION_AXES = ("operator", "stack", "substrate")
+
+def decorrelation_axes(auditors: list) -> list:
+    """The axes on which the auditor set is *pairwise-disjoint*, COMPUTED from the
+    declared manifests — never from a self-asserted flag. Each auditor declares
+    `operator` (who runs it), `stack` (analysis toolchain) and `substrate`
+    (build/runtime). An auditor that omits an axis, or leaves it blank, is treated
+    as CORRELATED on that axis (undeclared == assume shared), so one missing value
+    disqualifies the whole axis. Fewer than two auditors are decorrelated on
+    nothing.
+
+    This is the failure-decorrelation grade: distinct identities are not enough —
+    two auditors with different stacks but the SAME operator still share a failure
+    mode, so they grade ['stack','substrate'] (no 'operator'), which a policy can
+    reject. The weakest link governs: the grade is exactly the axes you can prove
+    disjoint from what was declared.
+    """
+    if len(auditors) < 2:
+        return []
+    out = []
+    for axis in DECORRELATION_AXES:
+        vals = [str(au.get(axis, "") or "").strip().lower() for au in auditors]
+        if all(vals) and len(set(vals)) == len(vals):
+            out.append(axis)
+    return out
+
 def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
-           require_audit=False, required_scopes=None, recomputed=None) -> dict:
+           require_audit=False, required_scopes=None, recomputed=None,
+           required_decorrelation_axes=None) -> dict:
     """verify-before-bump. Returns {decision, reasons[]}. decision in
     {bump, hold, reject}. 'recomputed' lets the consumer pass independently
     recomputed {source_tree_hash, artifact_hash, touched} to cross-check the trace
     rather than trust its self-reported values."""
     reasons = []
     decision = "bump"
+    grade = None  # decorrelation grade, computed when an audit is evaluated
     def downgrade(to, why):
         nonlocal decision
         order = {"bump": 0, "hold": 1, "reject": 2}
@@ -183,23 +212,42 @@ def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
     if touched:
         downgrade("hold", f"bump touches sensitive surface: {touched}")
 
-    # 3. audit (failure-decorrelation, not mere distinct identity)
+    # 3. audit — failure-decorrelation COMPUTED from the auditor manifests
+    #    (operator AND stack AND substrate pairwise-distinct), not a self-asserted
+    #    flag. Undeclared axis == assume correlated; <2 auditors == decorrelated on
+    #    nothing. Any "decorrelation" object the trace carries is advisory only.
     if require_audit:
         a = trace.get("audit")
         if not a or not a.get("auditors"):
             downgrade("hold", "audit required but none present")
         else:
-            dec = a.get("decorrelation", {})
-            if not (dec.get("distinct_stacks") and dec.get("distinct_substrate")):
-                downgrade("hold", "auditors not failure-decorrelated (need distinct stack AND substrate)")
-            if any(au.get("result") != "clean" for au in a["auditors"]):
+            auditors = a["auditors"]
+            grade = decorrelation_axes(auditors)
+            need = set(required_decorrelation_axes if required_decorrelation_axes is not None
+                       else DECORRELATION_AXES)
+            if len(auditors) < 2:
+                downgrade("hold", "a single auditor cannot be failure-decorrelated")
+            missing_axes = sorted(need - set(grade))
+            if missing_axes:
+                downgrade("hold", f"auditors not decorrelated on {missing_axes} "
+                                  f"(an axis any auditor leaves undeclared OR shares counts as correlated)")
+            if any(au.get("result") != "clean" for au in auditors):
                 downgrade("hold", "an auditor result is not clean")
             if required_scopes:
-                covered = set().union(*[set(au.get("scope", [])) for au in a["auditors"]])
+                covered = set().union(*[set(au.get("scope", [])) for au in auditors]) if auditors else set()
                 missing = set(required_scopes) - covered
                 if missing:
                     downgrade("hold", f"audit scope missing required classes: {sorted(missing)}")
+            # Advisory: flag a trace that self-asserts decorrelation its manifests don't support.
+            claimed = a.get("decorrelation") or {}
+            if claimed.get("distinct_stacks") and "stack" not in grade:
+                reasons.append("[note] trace claims distinct_stacks but the manifests do not support it (computed grade governs)")
+            if claimed.get("distinct_substrate") and "substrate" not in grade:
+                reasons.append("[note] trace claims distinct_substrate but the manifests do not support it (computed grade governs)")
 
     if not reasons:
         reasons.append("[bump] all required gates passed")
-    return {"decision": decision, "reasons": reasons}
+    out = {"decision": decision, "reasons": reasons}
+    if grade is not None:
+        out["decorrelation_grade"] = grade
+    return out

@@ -35,8 +35,12 @@ standard proposed in the MoltbotDen Skills-Marketplace discussion.
     "touched": []                                    // surface entries changed P->V
   },
   "audit": {                                          // optional
-    "auditors": [{"id":"did:key:...", "stack":"semgrep", "substrate":"x86/glibc", "result":"clean", "scope":["rce","auth-bypass"]}],
-    "decorrelation": {"distinct_stacks": true, "distinct_substrate": true}
+    "auditors": [                                     // each declares operator + stack + substrate
+      {"id":"did:key:zAud1", "operator":"did:key:zOrgA", "stack":"semgrep", "substrate":"x86/glibc",  "result":"clean", "scope":["rce","auth-bypass"]},
+      {"id":"did:key:zAud2", "operator":"did:key:zOrgB", "stack":"codeql",  "substrate":"arm64/musl", "result":"clean", "scope":["rce","auth-bypass"]}
+    ]
+    // failure-decorrelation is COMPUTED from the manifests above (operator AND stack
+    // AND substrate pairwise-distinct). Any "decorrelation": {...} flags are advisory.
   },
   "issuer": {"id_scheme": "did:key", "id": "did:key:z6Mk..."},
   "issued_at": "2026-06-21T00:00:00Z",
@@ -65,11 +69,18 @@ hold-unless-verified.**
    better caught by a *frozen behavioural conformance suite*; the surface gate is
    the cheap structural floor.)
 3. **Audit (optional, policy-gated).** If your policy requires a third-party audit,
-   the auditors must be **failure-decorrelated** — distinct analysis *stack* AND
-   *substrate*, not merely distinct identities. Two auditors running the same
-   toolchain on the same runtime are identity-distinct and failure-identical; the
-   second signature adds nothing. Results must be `clean` and `scope` must cover your
-   required classes.
+   the auditors must be **failure-decorrelated** — distinct **operator** AND analysis
+   *stack* AND *substrate*, not merely distinct identities. Two auditors running the
+   same toolchain on the same runtime are identity-distinct and failure-identical; two
+   run by the same *operator* share a hand even with different stacks. The grade is
+   **computed from the auditors' declared manifests, never from a self-asserted flag**:
+   `decide()` returns `decorrelation_grade` = the axes on which the set is provably
+   pairwise-distinct, and an axis any auditor leaves **undeclared counts as correlated**
+   (default pessimism). Fewer than two auditors decorrelate nothing. Policy picks the
+   required axes (default: operator + stack + substrate); the *weakest link* governs.
+   Results must be `clean` and `scope` must cover your required classes.
+
+   *Compatibility:* `operator` is an **additive** optional field — v0.1 traces stay valid. The change is verifier policy, not wire format: an audit that omits `operator` simply grades without that axis and is held under the default (operator-inclusive) policy. Set `required_decorrelation_axes` to relax.
 
 ## What it does and doesn't guarantee
 
