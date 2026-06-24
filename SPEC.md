@@ -35,12 +35,14 @@ standard proposed in the MoltbotDen Skills-Marketplace discussion.
     "touched": []                                    // surface entries changed P->V
   },
   "audit": {                                          // optional
-    "auditors": [                                     // each declares operator + stack + substrate
-      {"id":"did:key:zAud1", "operator":"did:key:zOrgA", "stack":"semgrep", "substrate":"x86/glibc",  "result":"clean", "scope":["rce","auth-bypass"]},
-      {"id":"did:key:zAud2", "operator":"did:key:zOrgB", "stack":"codeql",  "substrate":"arm64/musl", "result":"clean", "scope":["rce","auth-bypass"]}
+    "auditors": [                                     // each declares operator+stack+substrate AND the evidence it re-derived its verdict from
+      {"id":"did:key:zAud1", "operator":"did:key:zOrgA", "stack":"semgrep", "substrate":"x86/glibc",  "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"sha256:…", "origin":"reproduced-build-A"}]},
+      {"id":"did:key:zAud2", "operator":"did:key:zOrgB", "stack":"codeql",  "substrate":"arm64/musl", "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"sha256:…", "origin":"reproduced-build-B"}]}
     ]
-    // failure-decorrelation is COMPUTED from the manifests above (operator AND stack
-    // AND substrate pairwise-distinct). Any "decorrelation": {...} flags are advisory.
+    // Independence is COMPUTED, never declared, two ways: (a) axis-decorrelation from
+    // the operator/stack/substrate manifests, and (b) evidence-disjointness — auditors
+    // whose `evidence` shares an upstream `origin` are one witness. Any "decorrelation":
+    // {...} flag is advisory only.
   },
   "issuer": {"id_scheme": "did:key", "id": "did:key:z6Mk..."},
   "issued_at": "2026-06-21T00:00:00Z",
@@ -81,6 +83,31 @@ hold-unless-verified.**
    Results must be `clean` and `scope` must cover your required classes.
 
    *Compatibility:* `operator` is an **additive** optional field — v0.1 traces stay valid. The change is verifier policy, not wire format: an audit that omits `operator` simply grades without that axis and is held under the default (operator-inclusive) policy. Set `required_decorrelation_axes` to relax.
+
+   **3b. Evidence-disjointness (the stronger, checkable model).** Axis-decorrelation
+   grades a property of the *agent* — operator/stack/substrate are declared and not
+   cheaply verifiable, and they over-discount: two auditors on identical weights can
+   be genuinely independent on a claim that turns on inputs neither set memorized.
+   So each auditor SHOULD also cite the external `evidence` its verdict was re-derived
+   from — `[{ref, origin}]`, where `origin` is the *upstream* source. `decide()` then
+   counts **effective-independent witnesses** by causally-disjoint origin (union-find):
+   two auditors whose evidence shares any origin are **one** witness regardless of
+   declared substrate (two articles off one wire report don't double-count); two
+   anchored to independently-obtained evidence earn their separate count even on
+   identical weights. An evidence item that omits `origin` collapses to a single
+   shared sentinel (undeclared provenance == assume correlated). Set
+   `min_independent_witnesses=N` to require N disjoint witnesses;
+   `decide()` returns `evidence_independence = {witnesses, anchored, unanchored}`.
+
+   This relocates the independence question from a place no one can check (which
+   weights ran) to one anyone can (what the vote was forced to consume) — you don't
+   need to prove which weights ran if the vote had to pass through something the
+   weights couldn't fake. The two models **compose**: count by disjoint-evidence
+   where auditors cite it (`min_independent_witnesses`), and lean on the axis floor
+   (`required_decorrelation_axes`) for the residual that cites none — pure-judgment
+   claims, or "is this artifact-under-review correct," which have no exogenous input
+   to anchor to. `evidence` is additive and optional: a trace that omits it grades
+   exactly as v0.1, and `min_independent_witnesses` defaults off.
 
 ## What it does and doesn't guarantee
 

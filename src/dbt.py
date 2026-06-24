@@ -25,7 +25,7 @@ from __future__ import annotations
 import fnmatch, hashlib, json, os
 from nacl import signing  # PyNaCl
 
-SCHEMA = "deterministic-bump-trace/v0.1"
+SCHEMA = "deterministic-bump-trace/v0.2"
 
 # ---------- canonicalization + hashing ----------
 
@@ -137,8 +137,12 @@ def build_trace(package, version, previous_version, ecosystem,
         "sensitive_surface": {"globs": surface_globs,
                               "diff_touches_surface": len(touched) > 0,
                               "touched": touched},
-        "audit": audit,   # {"auditors":[{id,operator,stack,substrate,result,scope[]}], ...} or None;
-                          # decorrelation is COMPUTED from the manifests (operator AND stack AND substrate), not declared
+        "audit": audit,   # {"auditors":[{id,operator,stack,substrate,result,scope[],
+                          #   evidence:[{ref,origin}]}], ...} or None. Two independence
+                          # models, both COMPUTED not declared: (a) axis-decorrelation
+                          # from operator/stack/substrate manifests, and (b) evidence-
+                          # disjointness from the `evidence` each auditor re-derived its
+                          # verdict from (the stronger, checkable form). See decide().
         "issuer": {"id_scheme": "did:key", "id": issuer_did},
         "issued_at": issued_at,
     }
@@ -169,16 +173,105 @@ def decorrelation_axes(auditors: list) -> list:
             out.append(axis)
     return out
 
+# ---------- evidence-disjointness (the stronger, checkable independence model) ----------
+#
+# Axis-decorrelation (above) grades a property of the *agent* (operator/stack/
+# substrate) — which is declared and not cheaply verifiable. The sharper move is to
+# grade a property of the *evidence set*, which anyone can check: make each auditor
+# cite the external artifact its verdict was re-derived from, and count agreement
+# only across causally-disjoint evidence. Two auditors whose evidence shares any
+# upstream origin are ONE witness regardless of declared substrate; two anchored to
+# independently-obtained evidence earn their separate count even on identical
+# weights. Substrate-attestation is the hard version of a problem the external
+# anchor sidesteps: you don't need to prove which weights ran if the vote had to
+# pass through something the weights couldn't fake.
+
+EVIDENCE_UNDECLARED = "⊥undeclared"  # an evidence item with no declared `origin`
+# cannot be shown disjoint from anything, so it collapses to this single shared
+# sentinel (undeclared provenance == assume correlated — same pessimism as the axes).
+
+def evidence_origins(auditor: dict) -> set:
+    """The set of upstream origins an auditor's verdict was re-derived from.
+
+    Each `evidence` item declares `origin` — the upstream source, so two *different*
+    artifacts that both derive from one upstream (e.g. two articles off one wire
+    report) share an origin and do not double-count. An item that omits `origin`
+    contributes the shared ``EVIDENCE_UNDECLARED`` sentinel, so undeclared-provenance
+    evidence can never manufacture independence.
+    """
+    out = set()
+    for ev in (auditor.get("evidence") or []):
+        origin = str(ev.get("origin", "") or "").strip().lower()
+        out.add(origin or EVIDENCE_UNDECLARED)
+    return out
+
+def evidence_witnesses(auditors: list) -> dict:
+    """Effective-independent-witness count from causally-disjoint evidence.
+
+    Auditors that cite evidence are clustered by shared origin (union-find): every
+    cluster is ONE witness, because everyone in it could be reading correlated
+    evidence. ``witnesses`` is the number of disjoint clusters — the count that
+    survives ANP2's "two votes anchored to the same fetched doc are one witness."
+    Auditors that cite no evidence are ``unanchored``: they earn nothing here and
+    fall back to the axis grade (count by disjoint-artifact where artifacts exist,
+    floor by substrate where they don't).
+
+    Returns ``{"witnesses": int, "anchored": [ids], "unanchored": [ids]}``.
+    """
+    def aid(au, i):
+        return str(au.get("id") or f"aud{i}")
+    anchored, unanchored = [], []
+    for i, au in enumerate(auditors):
+        (anchored if (au.get("evidence") or []) else unanchored).append((i, au))
+
+    parent = {}
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    origin_owner = {}
+    for i, au in anchored:
+        node = ("aud", i)
+        find(node)
+        for o in evidence_origins(au):
+            if o in origin_owner:
+                union(node, origin_owner[o])
+            else:
+                origin_owner[o] = node
+    clusters = {find(("aud", i)) for i, _ in anchored}
+    return {
+        "witnesses": len(clusters),
+        "anchored": [aid(au, i) for i, au in anchored],
+        "unanchored": [aid(au, i) for i, au in unanchored],
+    }
+
 def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
            require_audit=False, required_scopes=None, recomputed=None,
-           required_decorrelation_axes=None) -> dict:
+           required_decorrelation_axes=None, min_independent_witnesses=None) -> dict:
     """verify-before-bump. Returns {decision, reasons[]}. decision in
     {bump, hold, reject}. 'recomputed' lets the consumer pass independently
     recomputed {source_tree_hash, artifact_hash, touched} to cross-check the trace
-    rather than trust its self-reported values."""
+    rather than trust its self-reported values.
+
+    Two independence policies on the audit, composable:
+      - `required_decorrelation_axes`: the axis floor (operator/stack/substrate),
+        graded from the auditor manifests. Default: all three.
+      - `min_independent_witnesses`: require at least N *causally-disjoint
+        evidence-anchored* witnesses (the stronger, checkable model). Off by
+        default; set it to count by evidence-disjointness where auditors cite
+        their evidence, and lean on the axis floor for any that don't.
+    """
     reasons = []
     decision = "bump"
     grade = None  # decorrelation grade, computed when an audit is evaluated
+    evidence = None  # evidence-disjointness summary, computed when an audit is evaluated
     def downgrade(to, why):
         nonlocal decision
         order = {"bump": 0, "hold": 1, "reject": 2}
@@ -231,6 +324,13 @@ def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
             if missing_axes:
                 downgrade("hold", f"auditors not decorrelated on {missing_axes} "
                                   f"(an axis any auditor leaves undeclared OR shares counts as correlated)")
+            # evidence-disjointness: the stronger, checkable independence model.
+            evidence = evidence_witnesses(auditors)
+            if min_independent_witnesses is not None and evidence["witnesses"] < min_independent_witnesses:
+                downgrade("hold", f"only {evidence['witnesses']} causally-disjoint evidence-anchored "
+                                  f"witness(es); policy needs {min_independent_witnesses} "
+                                  f"(declare evidence origins — shared or undeclared origin counts as one witness; "
+                                  f"auditors citing no evidence: {evidence['unanchored'] or 'none'})")
             if any(au.get("result") != "clean" for au in auditors):
                 downgrade("hold", "an auditor result is not clean")
             if required_scopes:
@@ -250,4 +350,6 @@ def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
     out = {"decision": decision, "reasons": reasons}
     if grade is not None:
         out["decorrelation_grade"] = grade
+    if evidence is not None:
+        out["evidence_independence"] = evidence
     return out
