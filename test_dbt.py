@@ -72,6 +72,39 @@ def test_audit_decorrelation():
     r=dbt.decide(mk({"auditors":[A,B]}), trusted_dids={did}, prev_issuer=did)
     assert r["decision"]=="bump" and "decorrelation_grade" not in r
 
+def test_evidence_disjointness():
+    sk, did = dbt.gen_key()
+    base={"package":"p","version":"2","previous_version":"1","ecosystem":"d","source_repo":"r","source_tag":"v2","source_tree_hash":"sha256:a","artifact_hash":"sha256:a","reproducible":True,"surface_globs":["x/*"],"issuer_did":did,"issued_at":"t"}
+    def mk(audit): return dbt.sign_trace(dbt.build_trace(**base, touched=[], audit=audit), sk)
+    A={"id":"did:key:zA","operator":"o1","stack":"s1","substrate":"x1","result":"clean","scope":["rce"],"evidence":[{"ref":"r1","origin":"docA"}]}
+    B={"id":"did:key:zB","operator":"o2","stack":"s2","substrate":"x2","result":"clean","scope":["rce"],"evidence":[{"ref":"r2","origin":"docB"}]}
+    # unit: disjoint origins -> 2 witnesses
+    assert dbt.evidence_witnesses([A,B])["witnesses"]==2
+    # two DIFFERENT refs that share one upstream origin -> one witness
+    Bsame=dict(B, evidence=[{"ref":"r2","origin":"docA"}])
+    assert dbt.evidence_witnesses([A,Bsame])["witnesses"]==1
+    # undeclared origin collapses to the shared sentinel -> one witness
+    Aund={**A,"evidence":[{"ref":"r1"}]}; Bund={**B,"evidence":[{"ref":"r2"}]}
+    assert dbt.evidence_witnesses([Aund,Bund])["witnesses"]==1
+    # an auditor citing no evidence is unanchored (earns nothing here)
+    C={"id":"did:key:zC","operator":"o3","stack":"s3","substrate":"x3","result":"clean","scope":["rce"]}
+    ev=dbt.evidence_witnesses([A,C]); assert ev["witnesses"]==1 and ev["unanchored"]==["did:key:zC"]
+    # policy: min_independent_witnesses satisfied (axes relaxed to isolate) -> bump
+    r=dbt.decide(mk({"auditors":[A,B]}), trusted_dids={did}, prev_issuer=did, require_audit=True,
+                 required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2)
+    assert r["decision"]=="bump", r
+    assert r["evidence_independence"]["witnesses"]==2
+    # same upstream -> only 1 disjoint witness -> hold, even with two distinct auditors
+    r=dbt.decide(mk({"auditors":[A,Bsame]}), trusted_dids={did}, prev_issuer=did, require_audit=True,
+                 required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2)
+    assert r["decision"]=="hold" and r["evidence_independence"]["witnesses"]==1
+    # composes with the axis floor: disjoint evidence (2) but SAME operator -> default axis policy still holds
+    Bso=dict(B, operator="o1")
+    r=dbt.decide(mk({"auditors":[A,Bso]}), trusted_dids={did}, prev_issuer=did, require_audit=True,
+                 required_scopes=["rce"], min_independent_witnesses=2)
+    assert r["decision"]=="hold"
+    assert r["evidence_independence"]["witnesses"]==2 and "operator" not in r["decorrelation_grade"]
+
 if __name__=="__main__":
     import traceback
     n=0

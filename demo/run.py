@@ -8,6 +8,7 @@ Traces, then runs the consumer's decide() across scenarios:
   artifact != source -> reject (consumer recompute disagrees with the trace)
   unknown issuer     -> hold
   audit required, decorrelated+clean -> bump ; not decorrelated -> hold
+  disjoint evidence (identical substrate) -> bump ; shared evidence origin -> hold
 """
 import sys, os, tempfile, shutil
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -105,6 +106,26 @@ def main():
         show("audit: same operator (correlated)", dbt.decide(
             t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
             required_scopes=["rce"]))
+
+        # 8. evidence-disjointness: two auditors on IDENTICAL substrate but anchored to
+        #    disjoint upstream evidence are two witnesses -> bump (axes relaxed to isolate)
+        disjoint_evidence = {"auditors": [
+            {"id":"did:key:zA","operator":"o","stack":"s","substrate":"x","result":"clean","scope":["rce"],"evidence":[{"ref":"sha256:aa","origin":"reproduced-build-A"}]},
+            {"id":"did:key:zB","operator":"o","stack":"s","substrate":"x","result":"clean","scope":["rce"],"evidence":[{"ref":"sha256:bb","origin":"independent-fuzz-run-B"}]}]}
+        t = trace_for("demo/pkg", "2", "1", v1, v2b, issuer, sk, audit=disjoint_evidence)
+        show("audit: disjoint evidence, identical substrate (2 witnesses)", dbt.decide(
+            t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2))
+
+        # 9. shared evidence origin: distinct operator/stack/substrate, but both votes
+        #    re-derived from ONE upstream -> one witness -> HOLD (two articles, one wire report)
+        shared_origin = {"auditors": [
+            {"id":"did:key:zA","operator":"oA","stack":"sA","substrate":"xA","result":"clean","scope":["rce"],"evidence":[{"ref":"sha256:aa","origin":"one-wire-report"}]},
+            {"id":"did:key:zB","operator":"oB","stack":"sB","substrate":"xB","result":"clean","scope":["rce"],"evidence":[{"ref":"sha256:cc","origin":"one-wire-report"}]}]}
+        t = trace_for("demo/pkg", "2", "1", v1, v2b, issuer, sk, audit=shared_origin)
+        show("audit: shared evidence origin (1 witness)", dbt.decide(
+            t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

@@ -24,10 +24,16 @@ A consumer runs `decide(trace, policy)` → `bump | hold | reject`:
    tagged git source (recompute the hashes; `reject` on mismatch).
 2. **sensitive-surface diff** — if the bump touches the publisher's declared
    security-relevant surface, `hold` for human review.
-3. **signed audit** (optional) — by **failure-decorrelated** auditors (distinct
-   **operator**, stack, *and* substrate, not just distinct identities — computed from
-   their declared manifests, undeclared/shared axis = correlated); `clean`; scope covers your
-   required classes.
+3. **signed audit** (optional) — by **failure-decorrelated** auditors, `clean`, with
+   scope covering your required classes. Independence is computed two ways, composable:
+   - **axis-decorrelation** — distinct **operator**, stack, *and* substrate, from the
+     declared manifests (undeclared/shared axis = correlated). The floor.
+   - **evidence-disjointness** (the stronger, checkable form) — each auditor cites the
+     external `evidence` its verdict was re-derived from; auditors whose evidence shares
+     an upstream `origin` are **one** witness regardless of substrate, and disjoint
+     evidence earns a separate count even on identical weights. Set
+     `min_independent_witnesses=N`. *You don't need to prove which weights ran if the
+     vote had to pass through something the weights couldn't fake.*
 
 Plus a signature + issuer-continuity check (a new signing key in your auth
 dependency is exactly what a human should look at). Default posture:
