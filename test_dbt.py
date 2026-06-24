@@ -38,6 +38,40 @@ def test_decide_gates():
     assert dbt.decide(ok, trusted_dids=set(), prev_issuer=did)["decision"]=="hold"  # unknown issuer
     assert dbt.decide(ok, trusted_dids={did}, prev_issuer=did, recomputed={"artifact_hash":"sha256:zzz"})["decision"]=="reject"
 
+def test_audit_decorrelation():
+    sk, did = dbt.gen_key()
+    base={"package":"p","version":"2","previous_version":"1","ecosystem":"d","source_repo":"r","source_tag":"v2","source_tree_hash":"sha256:a","artifact_hash":"sha256:a","reproducible":True,"surface_globs":["x/*"],"issuer_did":did,"issued_at":"t"}
+    def mk(audit): return dbt.sign_trace(dbt.build_trace(**base, touched=[], audit=audit), sk)
+    A={"id":"did:key:zA","operator":"did:key:zOpA","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce"]}
+    B={"id":"did:key:zB","operator":"did:key:zOpB","stack":"codeql","substrate":"arm64/musl","result":"clean","scope":["rce"]}
+    # helper for the unit-level grade function
+    assert dbt.decorrelation_axes([A,B])==["operator","stack","substrate"]
+    assert dbt.decorrelation_axes([A])==[]                                   # <2 -> nothing
+    assert "operator" not in dbt.decorrelation_axes([A, dict(B, operator="did:key:zOpA")])  # same operator
+    Bno=dict(B); Bno.pop("operator")
+    assert "operator" not in dbt.decorrelation_axes([A, Bno])                # undeclared == correlated
+    # fully decorrelated -> bump, grade carries all three axes
+    r=dbt.decide(mk({"auditors":[A,B]}), trusted_dids={did}, prev_issuer=did, require_audit=True, required_scopes=["rce"])
+    assert r["decision"]=="bump", r
+    assert set(r["decorrelation_grade"])=={"operator","stack","substrate"}
+    # same operator (distinct stack+substrate) -> hold; operator absent from grade
+    so=mk({"auditors":[A, dict(B, operator="did:key:zOpA")]})
+    r=dbt.decide(so, trusted_dids={did}, prev_issuer=did, require_audit=True)
+    assert r["decision"]=="hold" and "operator" not in r["decorrelation_grade"]
+    # self-asserted decorrelation it doesn't actually have -> still hold, with a note
+    lying=mk({"auditors":[A, dict(B, operator="did:key:zOpA", stack="semgrep", substrate="x86/glibc")], "decorrelation":{"distinct_stacks":True,"distinct_substrate":True}})
+    r=dbt.decide(lying, trusted_dids={did}, prev_issuer=did, require_audit=True)
+    assert r["decision"]=="hold"
+    assert any("computed grade governs" in x for x in r["reasons"])
+    # single auditor -> hold
+    assert dbt.decide(mk({"auditors":[A]}), trusted_dids={did}, prev_issuer=did, require_audit=True)["decision"]=="hold"
+    # policy relaxed to stack+substrate -> same-operator audit passes
+    r=dbt.decide(so, trusted_dids={did}, prev_issuer=did, require_audit=True, required_decorrelation_axes=("stack","substrate"))
+    assert r["decision"]=="bump", r
+    # not require_audit -> audit ignored, bump, no grade key
+    r=dbt.decide(mk({"auditors":[A,B]}), trusted_dids={did}, prev_issuer=did)
+    assert r["decision"]=="bump" and "decorrelation_grade" not in r
+
 if __name__=="__main__":
     import traceback
     n=0

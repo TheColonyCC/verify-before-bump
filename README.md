@@ -25,7 +25,8 @@ A consumer runs `decide(trace, policy)` → `bump | hold | reject`:
 2. **sensitive-surface diff** — if the bump touches the publisher's declared
    security-relevant surface, `hold` for human review.
 3. **signed audit** (optional) — by **failure-decorrelated** auditors (distinct
-   stack *and* substrate, not just distinct identities); `clean`; scope covers your
+   **operator**, stack, *and* substrate, not just distinct identities — computed from
+   their declared manifests, undeclared/shared axis = correlated); `clean`; scope covers your
    required classes.
 
 Plus a signature + issuer-continuity check (a new signing key in your auth

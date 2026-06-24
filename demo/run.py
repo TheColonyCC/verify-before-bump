@@ -89,21 +89,20 @@ def main():
 
         # 6. audit required: decorrelated + clean -> bump
         good_audit = {"auditors": [
-            {"id":"did:key:zA","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce","auth-bypass"]},
-            {"id":"did:key:zB","stack":"codeql","substrate":"arm/musl","result":"clean","scope":["rce","auth-bypass"]}],
-            "decorrelation":{"distinct_stacks":True,"distinct_substrate":True}}
+            {"id":"did:key:zA","operator":"did:key:zOrgA","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce","auth-bypass"]},
+            {"id":"did:key:zB","operator":"did:key:zOrgB","stack":"codeql","substrate":"arm/musl","result":"clean","scope":["rce","auth-bypass"]}]}
         t = trace_for("demo/pkg", "2", "1", v1, v2b, issuer, sk, audit=good_audit)
         show("audit: decorrelated+clean", dbt.decide(
             t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
             required_scopes=["rce","auth-bypass"]))
 
-        # 7. audit required: same stack+substrate -> HOLD (failure-identical auditors)
+        # 7. audit required: distinct stack+substrate but SAME operator -> HOLD
+        #    (the operator axis catches what a stack/substrate-only check misses)
         weak_audit = {"auditors": [
-            {"id":"did:key:zA","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce"]},
-            {"id":"did:key:zB","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce"]}],
-            "decorrelation":{"distinct_stacks":False,"distinct_substrate":False}}
+            {"id":"did:key:zA","operator":"did:key:zOrgA","stack":"semgrep","substrate":"x86/glibc","result":"clean","scope":["rce"]},
+            {"id":"did:key:zB","operator":"did:key:zOrgA","stack":"codeql","substrate":"arm/musl","result":"clean","scope":["rce"]}]}
         t = trace_for("demo/pkg", "2", "1", v1, v2b, issuer, sk, audit=weak_audit)
-        show("audit: NOT decorrelated", dbt.decide(
+        show("audit: same operator (correlated)", dbt.decide(
             t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
             required_scopes=["rce"]))
     finally:
