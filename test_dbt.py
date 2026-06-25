@@ -142,6 +142,49 @@ def test_origin_forgery_v03():
                  verified_consumption={("did:key:zA",H1),("did:key:zB",H2)})
     assert r["decision"]=="bump", r
 
+def test_challenge_protocol_v04():
+    import challenge as ch
+    sk_pub, did_pub = dbt.gen_key()
+    H1="sha256:"+"a"*64; H2="sha256:"+"b"*64
+    A={"id":"did:key:zAudA","operator":"opA","stack":"semgrep","substrate":"x86","result":"clean","scope":["rce"],"evidence":[{"ref":"bA","origin":H1}]}
+    B={"id":"did:key:zAudB","operator":"opB","stack":"codeql","substrate":"arm","result":"clean","scope":["rce"],"evidence":[{"ref":"bB","origin":H2}]}
+    base={"package":"p","version":"2","previous_version":"1","ecosystem":"d","source_repo":"r","source_tag":"v2","source_tree_hash":"sha256:a","artifact_hash":"sha256:a","reproducible":True,"surface_globs":["x/*"],"issuer_did":did_pub,"issued_at":"t"}
+    trace=dbt.sign_trace(dbt.build_trace(**base, touched=[], audit={"auditors":[A,B]}), sk_pub)
+    tid=ch.trace_id(trace); beacon="drand:round:12345:abcdef"
+    # a pool of challengers, each disjoint from both auditors (distinct op/stack/substrate)
+    pool=[]; sks={}
+    for op,st,sub in [("opC","bandit","riscv"),("opD","snyk","ppc"),("opE","grype","s390x")]:
+        sk,did=dbt.gen_key(); pool.append({"id":did,"operator":op,"stack":st,"substrate":sub}); sks[did]=sk
+    # selection is deterministic + recomputable, and picks an eligible challenger
+    selA=ch.select_challenger(beacon,tid,A,H1,pool); selB=ch.select_challenger(beacon,tid,B,H2,pool)
+    assert selA in sks and selB in sks
+    assert ch.select_challenger(beacon,tid,A,H1,pool)==selA   # deterministic
+    # correctly-selected challengers emit 'consumed' receipts -> verified_consumption
+    rA=ch.make_receipt(tid,A["id"],H1,beacon,"consumed",sks[selA])
+    rB=ch.make_receipt(tid,B["id"],H2,beacon,"consumed",sks[selB])
+    vc=ch.consumption_from_challenges([rA,rB],beacon,trace,pool)
+    assert (A["id"].lower(),H1) in vc and (B["id"].lower(),H2) in vc
+    # end-to-end: feed to decide() -> 2 substantiated witnesses -> bump
+    r=dbt.decide(trace, trusted_dids={did_pub}, prev_issuer=did_pub, require_audit=True, required_scopes=["rce"],
+                 required_decorrelation_axes=(), min_independent_witnesses=2, verified_consumption=vc)
+    assert r["decision"]=="bump", r
+    # forgery: a NON-selected challenger signs -> rejected (selection mismatch)
+    wrong=next(d for d in sks if d!=selA)
+    assert not ch.verify_receipt(ch.make_receipt(tid,A["id"],H1,beacon,"consumed",sks[wrong]),beacon,trace,pool)
+    # beacon-binding: a receipt for a different beacon is rejected under the real one
+    assert not ch.verify_receipt(ch.make_receipt(tid,A["id"],H1,"other-beacon","consumed",sks[selA]),beacon,trace,pool)
+    # result-binding: a "not-consumed" receipt from the right challenger is not credited
+    assert not ch.verify_receipt(ch.make_receipt(tid,A["id"],H1,beacon,"not-consumed",sks[selA]),beacon,trace,pool)
+    # disjointness: a challenger sharing the auditor's operator is never eligible/selected
+    shared={"id":"did:key:zShare","operator":"opA","stack":"bandit","substrate":"riscv"}
+    assert not ch._party_disjoint(shared, A)
+    assert ch.select_challenger(beacon,tid,A,H1,[shared]) is None   # no disjoint challenger
+    # with NO valid receipts, decide() sees 0 substantiated witnesses -> hold
+    r=dbt.decide(trace, trusted_dids={did_pub}, prev_issuer=did_pub, require_audit=True, required_scopes=["rce"],
+                 required_decorrelation_axes=(), min_independent_witnesses=2,
+                 verified_consumption=ch.consumption_from_challenges([],beacon,trace,pool))
+    assert r["decision"]=="hold" and r["evidence_independence"]["witnesses"]==0
+
 if __name__=="__main__":
     import traceback
     n=0

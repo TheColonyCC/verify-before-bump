@@ -10,10 +10,12 @@ Traces, then runs the consumer's decide() across scenarios:
   audit required, decorrelated+clean -> bump ; not decorrelated -> hold
   disjoint evidence (identical substrate) -> bump ; shared evidence origin -> hold
   v0.3: content-addressed origins, consumption unverified -> hold ; verified -> bump
+  v0.4: consumption proven by beacon-selected disjoint challengers -> bump ; forged receipt -> hold
 """
 import sys, os, tempfile, shutil
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import dbt
+import challenge as ch
 
 SURFACE = ["src/Security/*.py", "src/**/verify*", "src/auth/*"]
 
@@ -145,6 +147,30 @@ def main():
             t, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
             required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
             verified_consumption={("did:key:zA", H1), ("did:key:zB", H2)}))
+
+        # 12. v0.4 challenge protocol: who verified consumption, selected unpredictably (beacon)
+        #     and disjoint from the auditor, with signed receipts anyone can recheck.
+        A4 = {"id":"did:key:zA","operator":"opA","stack":"semgrep","substrate":"x86","result":"clean","scope":["rce"],"evidence":[{"ref":"bA","origin":H1}]}
+        B4 = {"id":"did:key:zB","operator":"opB","stack":"codeql","substrate":"arm","result":"clean","scope":["rce"],"evidence":[{"ref":"bB","origin":H2}]}
+        t4 = trace_for("demo/pkg", "2", "1", v1, v2b, issuer, sk, audit={"auditors":[A4, B4]})
+        tid, beacon = ch.trace_id(t4), "drand:round:12345"
+        pool, sks = [], {}
+        for op, st, sub in [("opC","bandit","riscv"), ("opD","snyk","ppc"), ("opE","grype","s390x")]:
+            csk, cdid = dbt.gen_key(); pool.append({"id":cdid,"operator":op,"stack":st,"substrate":sub}); sks[cdid] = csk
+        # the beacon picks a disjoint challenger per (auditor, origin); each emits a signed 'consumed' receipt
+        receipts = [ch.make_receipt(tid, a["id"], o, beacon, "consumed", sks[ch.select_challenger(beacon, tid, a, o, pool)])
+                    for a, o in [(A4, H1), (B4, H2)]]
+        vc = ch.consumption_from_challenges(receipts, beacon, t4, pool)
+        show("audit: consumption proven by beacon-selected challengers (2 witnesses)", dbt.decide(
+            t4, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
+            verified_consumption=vc))
+        # a forged receipt from a NON-selected challenger is dropped -> consumption unproven -> HOLD
+        forged = [ch.make_receipt(tid, A4["id"], H1, beacon, "consumed", sks[next(d for d in sks if d != ch.select_challenger(beacon, tid, A4, H1, pool))])]
+        show("audit: forged receipt (wrong challenger) -> not credited", dbt.decide(
+            t4, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
+            verified_consumption=ch.consumption_from_challenges(forged, beacon, t4, pool)))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

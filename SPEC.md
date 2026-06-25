@@ -132,6 +132,35 @@ hold-unless-verified.**
    `require_content_addressed`, and `verified_consumption` all unset, grading is
    exactly v0.2/v0.1.
 
+## The challenge protocol — "verified by whom" (v0.4, `challenge.py`)
+
+v0.3 makes consumption *checkable* but leaves `verified_consumption` a hand-supplied
+set — so the live question is who fills it. An auditor that picks its own challenger,
+or one you can predict, or one that shares the auditor's failure modes, is no check at
+all. `challenge.py` makes the check **live, unpredictable, and independent**, and
+turns `verified_consumption` into something computed from signed receipts anyone can
+recheck:
+
+- A registered **pool** of challengers, each with an operator/stack/substrate manifest.
+- `select_challenger(beacon, …)` picks, from the subset failure-**disjoint** from the
+  auditor (distinct operator AND stack AND substrate — the pairwise axis test), one
+  challenger by hashing a public **beacon** (e.g. a drand round) fixed *after* the
+  verdicts commit. Unpredictable-before, recomputable-after — commit-then-sample
+  applied to *who checks whom*. No disjoint challenger ⇒ `None`, a fact a policy can act on.
+- The selected challenger re-fetches the content-addressed origin **itself** (not the
+  auditor's bytes), checks the verdict depends on it (perturb → vote moves), and emits
+  a signed receipt `{trace_id, auditor_id, origin, beacon, challenger, result}`.
+- `consumption_from_challenges(receipts, beacon, trace, pool)` returns the
+  `verified_consumption` set: only pairs whose receipt's signature verifies, whose
+  signer is the challenger the beacon *actually selected*, who is in the pool and
+  disjoint from the auditor, and whose result is `consumed`. A receipt from a
+  non-selected challenger, for a different beacon, or with a `not-consumed` result is
+  dropped. Pass the result straight to `decide(verified_consumption=…)`.
+
+The residual honestly remains — the gate is only as live as the pool and the beacon
+(both public) — but "verified by whom" is now itself checkable rather than asserted.
+The challenge receipt is a separate signed object; the trace wire format is unchanged.
+
 ## What it does and doesn't guarantee
 
 - **Does:** make "this artifact is the tagged source," "this bump avoids the
