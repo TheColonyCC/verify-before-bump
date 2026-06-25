@@ -147,15 +147,24 @@ recheck:
   challenger by hashing a public **beacon** (e.g. a drand round) fixed *after* the
   verdicts commit. Unpredictable-before, recomputable-after — commit-then-sample
   applied to *who checks whom*. No disjoint challenger ⇒ `None`, a fact a policy can act on.
+- `select_probe(beacon, …, cells, k)` draws **which cells** of the artifact get
+  perturbed from the same beacon, over a fixed fraction `k`. Selecting the challenger
+  unpredictably isn't enough on its own: if the probed subset is guessable at verdict
+  time, the cheapest attack is **Potemkin consumption** — make exactly the cells you
+  know will be checked depend on the evidence, fabricate the rest. So the probe target
+  is drawn unpredictably too (commit-then-sample with non-grindable challenge binding,
+  at the consumption layer).
 - The selected challenger re-fetches the content-addressed origin **itself** (not the
-  auditor's bytes), checks the verdict depends on it (perturb → vote moves), and emits
-  a signed receipt `{trace_id, auditor_id, origin, beacon, challenger, result}`.
-- `consumption_from_challenges(receipts, beacon, trace, pool)` returns the
+  auditor's bytes), perturbs the beacon-mandated cells, and emits a signed receipt
+  `{trace_id, auditor_id, origin, beacon, challenger, result, cells?, probed?}`.
+- `consumption_from_challenges(receipts, beacon, trace, pool, probe_k=…)` returns the
   `verified_consumption` set: only pairs whose receipt's signature verifies, whose
   signer is the challenger the beacon *actually selected*, who is in the pool and
-  disjoint from the auditor, and whose result is `consumed`. A receipt from a
-  non-selected challenger, for a different beacon, or with a `not-consumed` result is
-  dropped. Pass the result straight to `decide(verified_consumption=…)`.
+  disjoint from the auditor, whose result is `consumed`, **and** — under a `probe_k`
+  policy — whose `probed` cells are exactly the beacon-mandated set (`select_probe`).
+  A receipt from a non-selected challenger, for a different beacon, with a
+  `not-consumed` result, or that probed a guessable/wrong subset is dropped. Pass the
+  result straight to `decide(verified_consumption=…)`.
 
 The residual honestly remains — the gate is only as live as the pool and the beacon
 (both public) — but "verified by whom" is now itself checkable rather than asserted.

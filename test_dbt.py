@@ -185,6 +185,40 @@ def test_challenge_protocol_v04():
                  verified_consumption=ch.consumption_from_challenges([],beacon,trace,pool))
     assert r["decision"]=="hold" and r["evidence_independence"]["witnesses"]==0
 
+def test_probe_selection_v04():
+    import challenge as ch
+    sk_pub, did_pub = dbt.gen_key()
+    H1="sha256:"+"a"*64
+    A={"id":"did:key:zAudA","operator":"opA","stack":"semgrep","substrate":"x86","result":"clean","scope":["rce"],"evidence":[{"ref":"bA","origin":H1}]}
+    base={"package":"p","version":"2","previous_version":"1","ecosystem":"d","source_repo":"r","source_tag":"v2","source_tree_hash":"sha256:a","artifact_hash":"sha256:a","reproducible":True,"surface_globs":["x/*"],"issuer_did":did_pub,"issued_at":"t"}
+    trace=dbt.sign_trace(dbt.build_trace(**base, touched=[], audit={"auditors":[A]}), sk_pub)
+    tid=ch.trace_id(trace); beacon="drand:round:777"
+    pool=[]; sks={}
+    for op,st,sub in [("opC","bandit","riscv"),("opD","snyk","ppc")]:
+        sk,did=dbt.gen_key(); pool.append({"id":did,"operator":op,"stack":st,"substrate":sub}); sks[did]=sk
+    sel=ch.select_challenger(beacon,tid,A,H1,pool)
+    # select_probe: deterministic, k distinct indices in range, sorted
+    p1=ch.select_probe(beacon,tid,A["id"],H1,cells=20,k=4)
+    assert p1==ch.select_probe(beacon,tid,A["id"],H1,cells=20,k=4)        # deterministic
+    assert len(p1)==4 and len(set(p1))==4 and all(0<=i<20 for i in p1) and p1==sorted(p1)
+    # different beacon -> different probe target (the unpredictability that defeats Potemkin)
+    assert ch.select_probe("drand:round:778",tid,A["id"],H1,cells=20,k=4)!=p1
+    # a correctly-probed receipt verifies under a probe_k policy
+    good=ch.make_receipt(tid,A["id"],H1,beacon,"consumed",sks[sel],cells=20,probe_k=4)
+    assert ch.verify_receipt(good,beacon,trace,pool,probe_k=4)
+    # Potemkin: the right challenger, but probed a guessable/fixed subset -> rejected
+    # (passes only in the vanishingly rare case the beacon actually mandated [0,1,2,3]).
+    forged=ch.sign_obj({"trace_id":tid,"auditor_id":A["id"],"origin":H1,"beacon":beacon,
+                        "challenger":sel,"result":"consumed","cells":20,"probed":[0,1,2,3]}, sks[sel])
+    assert ch.verify_receipt(forged,beacon,trace,pool,probe_k=4) == (p1==[0,1,2,3])
+    # a whole-artifact (no probe) receipt: fine without a probe_k policy, rejected with one
+    v4=ch.make_receipt(tid,A["id"],H1,beacon,"consumed",sks[sel])
+    assert ch.verify_receipt(v4,beacon,trace,pool)                       # v0.4 behaviour preserved
+    assert not ch.verify_receipt(v4,beacon,trace,pool,probe_k=4)         # probe-binding required, none present
+    # end-to-end through decide(): probe-bound receipt -> 1 substantiated witness
+    vc=ch.consumption_from_challenges([good],beacon,trace,pool,probe_k=4)
+    assert (A["id"].lower(),H1) in vc
+
 if __name__=="__main__":
     import traceback
     n=0

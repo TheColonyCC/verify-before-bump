@@ -44,10 +44,12 @@ A consumer runs `decide(trace, policy)` → `bump | hold | reject`:
    - **the challenge protocol** (v0.4, `challenge.py`) — answers *verified by whom*:
      a registered pool of challengers, each selected unpredictably by a public **beacon**
      (recomputable after the fact) from the subset **disjoint** from the auditor, emitting
-     signed receipts. `consumption_from_challenges()` turns those receipts into the
-     `verified_consumption` set — so a self-picked, predictable, or correlated checker
-     (or a forged receipt) can't rubber-stamp. The gate becomes only as live as the pool
-     and the beacon, both public.
+     signed receipts. The same beacon also picks **which cells get probed**
+     (`select_probe` + a `probe_k` policy) so the auditor can't pre-entail the checked
+     subset (Potemkin consumption). `consumption_from_challenges()` turns those receipts
+     into the `verified_consumption` set — so a self-picked, predictable, or correlated
+     checker, a forged receipt, or one that probed guessable cells can't rubber-stamp.
+     The gate becomes only as live as the pool and the beacon, both public.
 
 Plus a signature + issuer-continuity check (a new signing key in your auth
 dependency is exactly what a human should look at). Default posture:
