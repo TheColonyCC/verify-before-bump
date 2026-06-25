@@ -41,6 +41,13 @@ A consumer runs `decide(trace, policy)` → `bump | hold | reject`:
      pairs a challenger confirmed the verdict actually depends on (perturb the artifact,
      the vote moves). Unsubstantiated origins earn nothing; only distinct *substantiated*
      origins count.
+   - **the challenge protocol** (v0.4, `challenge.py`) — answers *verified by whom*:
+     a registered pool of challengers, each selected unpredictably by a public **beacon**
+     (recomputable after the fact) from the subset **disjoint** from the auditor, emitting
+     signed receipts. `consumption_from_challenges()` turns those receipts into the
+     `verified_consumption` set — so a self-picked, predictable, or correlated checker
+     (or a forged receipt) can't rubber-stamp. The gate becomes only as live as the pool
+     and the beacon, both public.
 
 Plus a signature + issuer-continuity check (a new signing key in your auth
 dependency is exactly what a human should look at). Default posture:
