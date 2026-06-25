@@ -11,8 +11,13 @@ left the residual the Colony thread kept hitting — "verified by *whom*?":
                                  corrupt that one. Selection must be unpredictable.
   3. INDEPENDENT of the auditor? a challenger that shares the auditor's failure modes
                                  (or its evidence) just re-runs the same mistake.
+  4. WHICH PART gets probed?     even with an unpredictable, disjoint challenger, if
+                                 the cells it perturbs are guessable the auditor
+                                 entails exactly those and fabricates the rest
+                                 (Potemkin consumption). The probe target must be
+                                 unpredictable too.
 
-This module closes all three with signed challenge receipts whose selection anyone
+This module closes all four with signed challenge receipts whose selection anyone
 can recompute:
 
   - A registered POOL of challengers, each with an operator/stack/substrate manifest.
@@ -20,8 +25,11 @@ can recompute:
     auditor, one challenger by hashing a public BEACON (e.g. a drand round) fixed
     AFTER the verdicts commit. Unpredictable-before, recomputable-after — the same
     commit-then-sample move, applied to *who checks whom*.
+  - ``select_probe(beacon, …)`` draws WHICH cells of the artifact get perturbed from
+    the same beacon, over a fixed fraction — so the auditor can't pre-entail the
+    checked cells. Recorded in the receipt and re-checked under a `probe_k` policy.
   - The selected challenger re-fetches the content-addressed origin ITSELF (not the
-    auditor's bytes) and emits a signed receipt ``{result: consumed|…}``.
+    auditor's bytes), perturbs the beacon-mandated cells, and emits a signed receipt.
   - ``consumption_from_challenges()`` returns the ``verified_consumption`` set for
     ``decide()`` — only pairs whose receipt verifies, was emitted by the correctly
     *selected* challenger, by one *disjoint* from the auditor, with result ``consumed``.
@@ -94,14 +102,47 @@ def select_challenger(beacon, tid: str, auditor: dict, origin, pool: list):
                                       str(auditor.get("id", "")), str(origin)])).hexdigest(), 16)
     return eligible[h % len(eligible)]["id"]
 
+def select_probe(beacon, tid: str, auditor_id: str, origin, cells: int, k: int) -> list:
+    """The beacon-mandated subset of artifact cells to probe — which *part* of the
+    evidence the challenger must perturb, not just who perturbs it.
+
+    Selecting the challenger unpredictably (`select_challenger`) isn't enough on its
+    own: if *which cells* get probed is guessable at verdict time, the cheapest attack
+    is **Potemkin consumption** — make exactly the cells you know will be checked
+    genuinely depend on the evidence, fabricate the rest. So the probe target is drawn
+    the same way the challenger is: by hashing a public beacon fixed *after* the
+    verdicts commit (unpredictable-before, recomputable-after), over a fixed fraction
+    `k` of `cells` so padding can't dilute the sample. Returns sorted distinct indices
+    in [0, cells). Commit-then-sample with non-grindable challenge binding, at the
+    consumption layer.
+    """
+    if cells <= 0 or k <= 0:
+        return []
+    k = min(k, cells)
+    chosen, seen, i = [], set(), 0
+    while len(chosen) < k:
+        h = int(hashlib.sha256(dbt.canon([str(beacon), str(tid), str(auditor_id),
+                                          str(origin), "probe", i])).hexdigest(), 16)
+        idx = h % cells
+        if idx not in seen:
+            seen.add(idx)
+            chosen.append(idx)
+        i += 1
+    return sorted(chosen)
+
 # ---------- receipts ----------
 
 def make_receipt(tid: str, auditor_id: str, origin: str, beacon, result: str,
-                 sk: signing.SigningKey) -> dict:
+                 sk: signing.SigningKey, *, cells: "int | None" = None, probe_k: "int | None" = None) -> dict:
     """A challenger's signed verdict on one (auditor, origin) consumption check.
     `result` is "consumed" when the auditor's verdict provably depends on the
-    re-fetched artifact (e.g. perturb it and the vote moves), else "not-consumed"."""
-    receipt = {
+    re-fetched artifact across the probed cells, else "not-consumed".
+
+    Pass `cells` (the artifact's addressable-unit count, as the challenger found it on
+    re-fetch) and `probe_k` to record the beacon-mandated probe target — the cells the
+    challenger actually perturbed. Without them the receipt is a v0.4 whole-artifact
+    receipt (no probe-target binding)."""
+    receipt: dict = {
         "trace_id": tid,
         "auditor_id": auditor_id,
         "origin": origin,
@@ -109,13 +150,22 @@ def make_receipt(tid: str, auditor_id: str, origin: str, beacon, result: str,
         "challenger": dbt.did_key(bytes(sk.verify_key)),
         "result": result,
     }
+    if cells is not None and probe_k is not None:
+        receipt["cells"] = int(cells)
+        receipt["probed"] = select_probe(beacon, tid, auditor_id, origin, int(cells), int(probe_k))
     return sign_obj(receipt, sk)
 
-def verify_receipt(receipt: dict, beacon, trace: dict, pool: list) -> bool:
+def verify_receipt(receipt: dict, beacon, trace: dict, pool: list, *, probe_k: "int | None" = None) -> bool:
     """A receipt counts only if every link checks out:
     binds to this trace + beacon, signature verifies, the signer is the challenger the
     beacon actually selected for that (auditor, origin), that challenger is in the pool
-    and disjoint from the auditor, and the result is "consumed"."""
+    and disjoint from the auditor, and the result is "consumed".
+
+    With `probe_k` set, ALSO require the receipt to have probed exactly the
+    beacon-mandated cells (`receipt["probed"] == select_probe(…, probe_k)`) — so a
+    "consumed" verdict can't have been reached over a guessable subset the auditor
+    could pre-entail (Potemkin consumption). A receipt with no probe target, or one
+    that probed the wrong cells, is rejected under a probe_k policy."""
     tid = trace_id(trace)
     if receipt.get("trace_id") != tid or str(receipt.get("beacon")) != str(beacon):
         return False
@@ -131,15 +181,26 @@ def verify_receipt(receipt: dict, beacon, trace: dict, pool: list) -> bool:
     if select_challenger(beacon, tid, auditor, receipt.get("origin"), pool) != ch:
         return False
     cm = next((c for c in pool if str(c.get("id", "")) == ch), None)
-    return cm is not None and _party_disjoint(cm, auditor)
+    if cm is None or not _party_disjoint(cm, auditor):
+        return False
+    if probe_k is not None:
+        cells = receipt.get("cells")
+        if not isinstance(cells, int) or cells <= 0:
+            return False  # probe-binding required but the receipt declares no cells
+        expected = select_probe(beacon, tid, str(receipt.get("auditor_id", "")),
+                                receipt.get("origin"), cells, probe_k)
+        if list(receipt.get("probed") or []) != expected:
+            return False  # probed a guessable / wrong subset, not the beacon-mandated one
+    return True
 
-def consumption_from_challenges(receipts: list, beacon, trace: dict, pool: list) -> set:
+def consumption_from_challenges(receipts: list, beacon, trace: dict, pool: list, *, probe_k: "int | None" = None) -> set:
     """The ``verified_consumption`` set for {@link dbt.decide} — the (auditor_id, origin)
     pairs backed by a valid, correctly-selected, disjoint, signed "consumed" receipt.
+    With `probe_k` set, each receipt must also have probed the beacon-mandated cells.
     Pass the result straight to ``decide(verified_consumption=…)``."""
     out = set()
     for r in receipts:
-        if verify_receipt(r, beacon, trace, pool):
+        if verify_receipt(r, beacon, trace, pool, probe_k=probe_k):
             out.add((str(r.get("auditor_id", "")).strip().lower(),
                      str(r.get("origin", "")).strip().lower()))
     return out

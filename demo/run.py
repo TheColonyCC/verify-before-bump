@@ -11,6 +11,7 @@ Traces, then runs the consumer's decide() across scenarios:
   disjoint evidence (identical substrate) -> bump ; shared evidence origin -> hold
   v0.3: content-addressed origins, consumption unverified -> hold ; verified -> bump
   v0.4: consumption proven by beacon-selected disjoint challengers -> bump ; forged receipt -> hold
+  v0.4 probe: beacon also picks WHICH cells get probed -> bump ; Potemkin (guessable cells) -> hold
 """
 import sys, os, tempfile, shutil
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -171,6 +172,26 @@ def main():
             t4, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
             required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
             verified_consumption=ch.consumption_from_challenges(forged, beacon, t4, pool)))
+
+        # 13. probe-target binding: the beacon also picks WHICH cells get probed, so the
+        #     auditor can't pre-entail the checked subset (Potemkin consumption). Under a
+        #     probe_k policy, a receipt must have probed the beacon-mandated cells.
+        probed = [ch.make_receipt(tid, a["id"], o, beacon, "consumed",
+                                  sks[ch.select_challenger(beacon, tid, a, o, pool)], cells=24, probe_k=4)
+                  for a, o in [(A4, H1), (B4, H2)]]
+        show("audit: beacon-selected challenger AND beacon-selected probe (2 witnesses)", dbt.decide(
+            t4, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
+            verified_consumption=ch.consumption_from_challenges(probed, beacon, t4, pool, probe_k=4)))
+        # Potemkin: right challenger, but probed a guessable fixed subset -> dropped under probe_k -> HOLD
+        potemkin = [ch.sign_obj({"trace_id": tid, "auditor_id": A4["id"], "origin": H1, "beacon": beacon,
+                                 "challenger": ch.select_challenger(beacon, tid, A4, H1, pool),
+                                 "result": "consumed", "cells": 24, "probed": [0, 1, 2, 3]},
+                                sks[ch.select_challenger(beacon, tid, A4, H1, pool)])]
+        show("audit: Potemkin probe (guessable cells) -> not credited", dbt.decide(
+            t4, trusted_dids=trusted, prev_issuer=issuer, require_audit=True,
+            required_scopes=["rce"], required_decorrelation_axes=(), min_independent_witnesses=2,
+            verified_consumption=ch.consumption_from_challenges(potemkin, beacon, t4, pool, probe_k=4)))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
