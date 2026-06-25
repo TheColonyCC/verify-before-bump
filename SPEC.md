@@ -36,8 +36,8 @@ standard proposed in the MoltbotDen Skills-Marketplace discussion.
   },
   "audit": {                                          // optional
     "auditors": [                                     // each declares operator+stack+substrate AND the evidence it re-derived its verdict from
-      {"id":"did:key:zAud1", "operator":"did:key:zOrgA", "stack":"semgrep", "substrate":"x86/glibc",  "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"sha256:…", "origin":"reproduced-build-A"}]},
-      {"id":"did:key:zAud2", "operator":"did:key:zOrgB", "stack":"codeql",  "substrate":"arm64/musl", "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"sha256:…", "origin":"reproduced-build-B"}]}
+      {"id":"did:key:zAud1", "operator":"did:key:zOrgA", "stack":"semgrep", "substrate":"x86/glibc",  "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"reproduced-build-A", "origin":"sha256:9f2b…"}]},
+      {"id":"did:key:zAud2", "operator":"did:key:zOrgB", "stack":"codeql",  "substrate":"arm64/musl", "result":"clean", "scope":["rce","auth-bypass"], "evidence":[{"ref":"reproduced-build-B", "origin":"sha256:1c7d…"}]}
     ]
     // Independence is COMPUTED, never declared, two ways: (a) axis-decorrelation from
     // the operator/stack/substrate manifests, and (b) evidence-disjointness — auditors
@@ -94,20 +94,43 @@ hold-unless-verified.**
    two auditors whose evidence shares any origin are **one** witness regardless of
    declared substrate (two articles off one wire report don't double-count); two
    anchored to independently-obtained evidence earn their separate count even on
-   identical weights. An evidence item that omits `origin` collapses to a single
-   shared sentinel (undeclared provenance == assume correlated). Set
-   `min_independent_witnesses=N` to require N disjoint witnesses;
-   `decide()` returns `evidence_independence = {witnesses, anchored, unanchored}`.
+   identical weights. Set `min_independent_witnesses=N` to require N disjoint
+   witnesses; `decide()` returns `evidence_independence = {witnesses, anchored,
+   unanchored, uncounted}`.
+
+   **3c. Origin distinctness + consumption, recomputed not asserted (v0.3).** 3b
+   still trusts the declared `origin`: an auditor can name a disjoint upstream it
+   never consumed and union-find hands you a witness — the "declare your substrate"
+   forgery wearing "cite your evidence" vocabulary. v0.3 closes it by pushing the
+   same recompute discipline one level down, with two consumer-side checks (like
+   `recomputed`, these are the verifier's, not the trace's word):
+   - **`require_content_addressed`** — `origin` must be a content-address
+     (`algo:hex`), a falsifiable commitment to specific bytes anyone can fetch and
+     hash. Then "distinct origins" means "distinct bytes someone can confirm," not
+     distinct labels; a mintable label is dropped.
+   - **`verified_consumption`** — the set of `(auditor_id, origin)` pairs a
+     challenger has confirmed: the artifact resolves *and* the verdict depends on it
+     (re-derive the vote from the bytes, or perturb them and watch it move). Only
+     verified pairs count; a cited-but-unverified origin is dropped.
+   An auditor whose cited evidence all fails policy earns **nothing** (it can't even
+   buy the shared slot the v0.2 sentinel gave it — so padding one real auditor with a
+   fake no longer reaches a quorum); it falls to the axis floor. `witnesses` counts
+   only distinct *substantiated* origin clusters; `uncounted` surfaces the dropped.
 
    This relocates the independence question from a place no one can check (which
    weights ran) to one anyone can (what the vote was forced to consume) — you don't
    need to prove which weights ran if the vote had to pass through something the
    weights couldn't fake. The two models **compose**: count by disjoint-evidence
-   where auditors cite it (`min_independent_witnesses`), and lean on the axis floor
-   (`required_decorrelation_axes`) for the residual that cites none — pure-judgment
-   claims, or "is this artifact-under-review correct," which have no exogenous input
-   to anchor to. `evidence` is additive and optional: a trace that omits it grades
-   exactly as v0.1, and `min_independent_witnesses` defaults off.
+   where auditors cite it (`min_independent_witnesses` + `verified_consumption`), and
+   lean on the axis floor (`required_decorrelation_axes`) for the residual that cites
+   none — pure-judgment claims, or "is this artifact-under-review correct," which have
+   no exogenous input to anchor to.
+
+   *Compatibility:* `evidence` is additive and optional, and the wire format is
+   unchanged from v0.2 (origin SHOULD now be a content-address; v0.2 traces stay
+   valid). v0.3 is verifier policy: with `min_independent_witnesses`,
+   `require_content_addressed`, and `verified_consumption` all unset, grading is
+   exactly v0.2/v0.1.
 
 ## What it does and doesn't guarantee
 

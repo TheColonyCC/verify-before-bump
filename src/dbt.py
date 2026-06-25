@@ -22,10 +22,10 @@ Pure-stdlib + PyNaCl. JCS here is the adequate subset for string/int/bool/list/
 dict payloads (no floats): sorted keys, compact separators, UTF-8.
 """
 from __future__ import annotations
-import fnmatch, hashlib, json, os
+import fnmatch, hashlib, json, os, re
 from nacl import signing  # PyNaCl
 
-SCHEMA = "deterministic-bump-trace/v0.2"
+SCHEMA = "deterministic-bump-trace/v0.3"
 
 # ---------- canonicalization + hashing ----------
 
@@ -186,18 +186,26 @@ def decorrelation_axes(auditors: list) -> list:
 # anchor sidesteps: you don't need to prove which weights ran if the vote had to
 # pass through something the weights couldn't fake.
 
-EVIDENCE_UNDECLARED = "⊥undeclared"  # an evidence item with no declared `origin`
-# cannot be shown disjoint from anything, so it collapses to this single shared
-# sentinel (undeclared provenance == assume correlated — same pessimism as the axes).
+EVIDENCE_UNDECLARED = "⊥undeclared"  # an evidence item whose origin can't be shown
+# disjoint from anything (omitted, or — under v0.3 policy — un-content-addressed or
+# consumption-unverified) collapses to this single shared sentinel (assume correlated).
+
+_CONTENT_ADDR = re.compile(r"^[a-z0-9][a-z0-9+.\-]*:[0-9a-f]{32,}$")
+
+def is_content_address(origin: str) -> bool:
+    """True if `origin` is a content-address (``algo:hex``, e.g. ``sha256:ab12…``):
+    a falsifiable commitment to specific bytes anyone can fetch and hash, not a
+    mintable label. With it, "distinct origins" means "distinct bytes someone can
+    confirm," not distinct strings."""
+    return bool(_CONTENT_ADDR.match(str(origin or "").strip().lower()))
 
 def evidence_origins(auditor: dict) -> set:
-    """The set of upstream origins an auditor's verdict was re-derived from.
+    """The *declared* origin set (what the auditor claims; pre-policy view).
 
     Each `evidence` item declares `origin` — the upstream source, so two *different*
     artifacts that both derive from one upstream (e.g. two articles off one wire
     report) share an origin and do not double-count. An item that omits `origin`
-    contributes the shared ``EVIDENCE_UNDECLARED`` sentinel, so undeclared-provenance
-    evidence can never manufacture independence.
+    contributes the shared ``EVIDENCE_UNDECLARED`` sentinel.
     """
     out = set()
     for ev in (auditor.get("evidence") or []):
@@ -205,24 +213,69 @@ def evidence_origins(auditor: dict) -> set:
         out.add(origin or EVIDENCE_UNDECLARED)
     return out
 
-def evidence_witnesses(auditors: list) -> dict:
-    """Effective-independent-witness count from causally-disjoint evidence.
+def _counting_origins(auditor: dict, verified, require_ca: bool):
+    """The origins that actually COUNT toward independence under v0.3 policy.
 
-    Auditors that cite evidence are clustered by shared origin (union-find): every
-    cluster is ONE witness, because everyone in it could be reading correlated
-    evidence. ``witnesses`` is the number of disjoint clusters — the count that
-    survives ANP2's "two votes anchored to the same fetched doc are one witness."
-    Auditors that cite no evidence are ``unanchored``: they earn nothing here and
-    fall back to the axis grade (count by disjoint-artifact where artifacts exist,
-    floor by substrate where they don't).
+    A declared origin counts only if it survives the checks: content-addressed (when
+    `require_ca`) and consumption-verified (when `verified` is given — a challenger
+    confirmed this auditor's verdict is entailed by / sensitive to the artifact at
+    that origin). A cited origin that fails is DROPPED — an unsubstantiated
+    distinctness claim earns nothing, which closes the "name an upstream you never
+    consumed" forgery. If evidence was cited but nothing survives, the auditor's
+    claim is unsubstantiated and earns NOTHING (status ``sentinel`` — it contributes
+    zero witnesses, exactly like citing none, and falls to the axis floor); if no
+    evidence was cited at all, it is ``unanchored``. The two differ only in reporting.
 
-    Returns ``{"witnesses": int, "anchored": [ids], "unanchored": [ids]}``.
+    Returns (origins:set, status) with status in {anchored, sentinel, unanchored}.
     """
+    aid = str(auditor.get("id") or "").strip().lower()
+    cited = bool(auditor.get("evidence"))
+    passing = set()
+    for ev in (auditor.get("evidence") or []):
+        origin = str(ev.get("origin", "") or "").strip().lower()
+        if not origin:
+            continue
+        if require_ca and not is_content_address(origin):
+            continue
+        if verified is not None and (aid, origin) not in verified:
+            continue
+        passing.add(origin)
+    if passing:
+        return passing, "anchored"
+    if cited:
+        return set(), "sentinel"   # cited evidence, but none survives policy
+    return set(), "unanchored"     # cited no evidence at all
+
+def evidence_witnesses(auditors: list, *, verified=None, require_content_addressed: bool = False) -> dict:
+    """Effective-independent-witness count from causally-disjoint, *substantiated* evidence.
+
+    Auditors are clustered by shared origin (union-find): every cluster is ONE
+    witness, because everyone in it could be reading correlated evidence. This is the
+    count that survives "two votes anchored to the same fetched doc are one witness."
+
+    v0.3 makes origin-distinctness and consumption RECOMPUTED, not asserted:
+      - ``require_content_addressed``: an `origin` must pass {@link is_content_address}
+        or it doesn't count — "distinct origins" then means "distinct bytes someone
+        can pull and hash," not distinct labels.
+      - ``verified``: an iterable of ``(auditor_id, origin)`` pairs a challenger has
+        confirmed (the artifact resolves AND the verdict depends on it — e.g. perturb
+        it and the vote moves). Only verified pairs count, so naming a disjoint
+        upstream you never consumed cannot manufacture a witness.
+    An auditor whose cited evidence all fails policy earns nothing — its
+    unsubstantiated claim contributes zero witnesses (surfaced in ``uncounted``),
+    just like one that cites no evidence (``unanchored``); both fall to the axis
+    floor. So ``witnesses`` counts only distinct *substantiated* origin clusters.
+    (This tightens the v0.2 sentinel, which credited unsubstantiated evidence with
+    one shared witness — under v0.3 a faked origin can't even buy the shared slot.)
+
+    Returns ``{"witnesses", "anchored", "unanchored", "uncounted"}``.
+    """
+    norm_verified = None
+    if verified is not None:
+        norm_verified = {(str(a).strip().lower(), str(o).strip().lower()) for a, o in verified}
+
     def aid(au, i):
         return str(au.get("id") or f"aud{i}")
-    anchored, unanchored = [], []
-    for i, au in enumerate(auditors):
-        (anchored if (au.get("evidence") or []) else unanchored).append((i, au))
 
     parent = {}
     def find(x):
@@ -236,11 +289,20 @@ def evidence_witnesses(auditors: list) -> dict:
     def union(a, b):
         parent[find(a)] = find(b)
 
+    anchored, unanchored, uncounted = [], [], []
     origin_owner = {}
-    for i, au in anchored:
+    for i, au in enumerate(auditors):
+        origins, status = _counting_origins(au, norm_verified, require_content_addressed)
+        if status == "sentinel":
+            uncounted.append((i, au))   # cited evidence but none substantiated -> 0 witnesses
+            continue
+        if status == "unanchored":
+            unanchored.append((i, au))  # cited no evidence -> axis-floor only
+            continue
+        anchored.append((i, au))
         node = ("aud", i)
         find(node)
-        for o in evidence_origins(au):
+        for o in origins:
             if o in origin_owner:
                 union(node, origin_owner[o])
             else:
@@ -250,11 +312,13 @@ def evidence_witnesses(auditors: list) -> dict:
         "witnesses": len(clusters),
         "anchored": [aid(au, i) for i, au in anchored],
         "unanchored": [aid(au, i) for i, au in unanchored],
+        "uncounted": [aid(au, i) for i, au in uncounted],
     }
 
 def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
            require_audit=False, required_scopes=None, recomputed=None,
-           required_decorrelation_axes=None, min_independent_witnesses=None) -> dict:
+           required_decorrelation_axes=None, min_independent_witnesses=None,
+           verified_consumption=None, require_content_addressed=False) -> dict:
     """verify-before-bump. Returns {decision, reasons[]}. decision in
     {bump, hold, reject}. 'recomputed' lets the consumer pass independently
     recomputed {source_tree_hash, artifact_hash, touched} to cross-check the trace
@@ -267,6 +331,13 @@ def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
         evidence-anchored* witnesses (the stronger, checkable model). Off by
         default; set it to count by evidence-disjointness where auditors cite
         their evidence, and lean on the axis floor for any that don't.
+      - `require_content_addressed` / `verified_consumption`: v0.3 — make origin
+        *distinctness* and *consumption* recomputed, not asserted. The first
+        requires each `origin` to be a content-address; the second is the set of
+        ``(auditor_id, origin)`` pairs a challenger confirmed (artifact resolves AND
+        the verdict depends on it). Unsubstantiated origins are dropped, so a faked
+        distinct origin can't manufacture a witness. Like `recomputed`, these are
+        the consumer's independent checks, not the trace's self-report.
     """
     reasons = []
     decision = "bump"
@@ -325,12 +396,15 @@ def decide(trace: dict, *, trusted_dids=None, prev_issuer=None,
                 downgrade("hold", f"auditors not decorrelated on {missing_axes} "
                                   f"(an axis any auditor leaves undeclared OR shares counts as correlated)")
             # evidence-disjointness: the stronger, checkable independence model.
-            evidence = evidence_witnesses(auditors)
+            # v0.3: origin distinctness + consumption are recomputed (content-address
+            # + verified_consumption), not taken from the auditor's word.
+            evidence = evidence_witnesses(auditors, verified=verified_consumption,
+                                          require_content_addressed=require_content_addressed)
             if min_independent_witnesses is not None and evidence["witnesses"] < min_independent_witnesses:
                 downgrade("hold", f"only {evidence['witnesses']} causally-disjoint evidence-anchored "
                                   f"witness(es); policy needs {min_independent_witnesses} "
-                                  f"(declare evidence origins — shared or undeclared origin counts as one witness; "
-                                  f"auditors citing no evidence: {evidence['unanchored'] or 'none'})")
+                                  f"(shared/undeclared origin = one witness; unsubstantiated origins dropped: "
+                                  f"{evidence['uncounted'] or 'none'}; citing no evidence: {evidence['unanchored'] or 'none'})")
             if any(au.get("result") != "clean" for au in auditors):
                 downgrade("hold", "an auditor result is not clean")
             if required_scopes:

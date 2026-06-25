@@ -83,9 +83,9 @@ def test_evidence_disjointness():
     # two DIFFERENT refs that share one upstream origin -> one witness
     Bsame=dict(B, evidence=[{"ref":"r2","origin":"docA"}])
     assert dbt.evidence_witnesses([A,Bsame])["witnesses"]==1
-    # undeclared origin collapses to the shared sentinel -> one witness
+    # undeclared origin earns nothing (v0.3: unsubstantiated -> 0, falls to axis floor)
     Aund={**A,"evidence":[{"ref":"r1"}]}; Bund={**B,"evidence":[{"ref":"r2"}]}
-    assert dbt.evidence_witnesses([Aund,Bund])["witnesses"]==1
+    eu=dbt.evidence_witnesses([Aund,Bund]); assert eu["witnesses"]==0 and len(eu["uncounted"])==2
     # an auditor citing no evidence is unanchored (earns nothing here)
     C={"id":"did:key:zC","operator":"o3","stack":"s3","substrate":"x3","result":"clean","scope":["rce"]}
     ev=dbt.evidence_witnesses([A,C]); assert ev["witnesses"]==1 and ev["unanchored"]==["did:key:zC"]
@@ -104,6 +104,43 @@ def test_evidence_disjointness():
                  required_scopes=["rce"], min_independent_witnesses=2)
     assert r["decision"]=="hold"
     assert r["evidence_independence"]["witnesses"]==2 and "operator" not in r["decorrelation_grade"]
+
+def test_origin_forgery_v03():
+    sk, did = dbt.gen_key()
+    base={"package":"p","version":"2","previous_version":"1","ecosystem":"d","source_repo":"r","source_tag":"v2","source_tree_hash":"sha256:a","artifact_hash":"sha256:a","reproducible":True,"surface_globs":["x/*"],"issuer_did":did,"issued_at":"t"}
+    def mk(audit): return dbt.sign_trace(dbt.build_trace(**base, touched=[], audit=audit), sk)
+    H1="sha256:"+"a"*64; H2="sha256:"+"b"*64
+    A={"id":"did:key:zA","operator":"o1","stack":"s1","substrate":"x1","result":"clean","scope":["rce"],"evidence":[{"ref":"r1","origin":H1}]}
+    B={"id":"did:key:zB","operator":"o2","stack":"s2","substrate":"x2","result":"clean","scope":["rce"],"evidence":[{"ref":"r2","origin":H2}]}
+    # content-address recogniser
+    assert dbt.is_content_address(H1) and not dbt.is_content_address("my-build-A")
+    # no v0.3 policy: distinct declared origins are trusted -> 2 (v0.2 behaviour preserved)
+    assert dbt.evidence_witnesses([A,B])["witnesses"]==2
+    # the forgery (ax7): distinct origins, NONE consumption-verified -> 0 substantiated witnesses
+    ev=dbt.evidence_witnesses([A,B], verified=set())
+    assert ev["witnesses"]==0 and set(ev["uncounted"])=={"did:key:zA","did:key:zB"}
+    # verify both (auditor,origin) pairs -> 2 again (case-insensitive normalisation)
+    ev=dbt.evidence_witnesses([A,B], verified={("did:key:zA",H1),("did:key:zB",H2)})
+    assert ev["witnesses"]==2 and ev["uncounted"]==[]
+    # 1 real + 1 padded fake: only A's consumption verified -> the fake earns nothing
+    ev=dbt.evidence_witnesses([A,B], verified={("did:key:zA",H1)})
+    assert ev["witnesses"]==1 and ev["uncounted"]==["did:key:zB"]
+    # require_content_addressed: a mintable label origin is dropped; the CA origin counts
+    Blabel=dict(B, evidence=[{"ref":"r2","origin":"my-build-B"}])
+    ev=dbt.evidence_witnesses([A,Blabel], require_content_addressed=True)
+    assert ev["witnesses"]==1 and ev["uncounted"]==["did:key:zB"]
+    # mixed: an auditor with one verified CA origin AND an unverified one stays anchored via the verified one
+    Bmix=dict(B, evidence=[{"ref":"r2","origin":H2},{"ref":"r3","origin":"sha256:"+"c"*64}])
+    assert dbt.evidence_witnesses([A,Bmix], verified={("did:key:zA",H1),("did:key:zB",H2)})["witnesses"]==2
+    # decide() gate: faked independence is held; verified consumption bumps
+    faked=mk({"auditors":[A,B]})
+    r=dbt.decide(faked, trusted_dids={did}, prev_issuer=did, require_audit=True, required_scopes=["rce"],
+                 required_decorrelation_axes=(), min_independent_witnesses=2, verified_consumption=set())
+    assert r["decision"]=="hold" and r["evidence_independence"]["witnesses"]==0
+    r=dbt.decide(faked, trusted_dids={did}, prev_issuer=did, require_audit=True, required_scopes=["rce"],
+                 required_decorrelation_axes=(), min_independent_witnesses=2,
+                 verified_consumption={("did:key:zA",H1),("did:key:zB",H2)})
+    assert r["decision"]=="bump", r
 
 if __name__=="__main__":
     import traceback

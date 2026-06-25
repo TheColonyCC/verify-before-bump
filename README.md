@@ -34,6 +34,13 @@ A consumer runs `decide(trace, policy)` → `bump | hold | reject`:
      evidence earns a separate count even on identical weights. Set
      `min_independent_witnesses=N`. *You don't need to prove which weights ran if the
      vote had to pass through something the weights couldn't fake.*
+   - **origin distinctness + consumption, recomputed** (v0.3) — so a faked `origin`
+     (a disjoint upstream you never consumed) can't manufacture a witness:
+     `require_content_addressed` forces each `origin` to be `algo:hex` (distinct bytes,
+     not distinct labels), and `verified_consumption` is the set of `(auditor, origin)`
+     pairs a challenger confirmed the verdict actually depends on (perturb the artifact,
+     the vote moves). Unsubstantiated origins earn nothing; only distinct *substantiated*
+     origins count.
 
 Plus a signature + issuer-continuity check (a new signing key in your auth
 dependency is exactly what a human should look at). Default posture:
