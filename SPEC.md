@@ -84,6 +84,8 @@ hold-unless-verified.**
 
    *Compatibility:* `operator` is an **additive** optional field — v0.1 traces stay valid. The change is verifier policy, not wire format: an audit that omits `operator` simply grades without that axis and is held under the default (operator-inclusive) policy. Set `required_decorrelation_axes` to relax.
 
+   *Prior art.* "Independent auditors fail together more than their distinct identities suggest" is the **coincident-failure** result from software dependability: the Knight–Leveson N-version experiments (independently-developed versions fail on correlated inputs), Littlewood & Miller's difficulty-function model of why diversity you didn't engineer for is diversity you don't have, and the modern **software/build diversity** line (varying toolchains and substrates — Monperrus et al., [arXiv:1409.7324](https://arxiv.org/abs/1409.7324); the multi-build response after the SolarWinds compromise). `decorrelation_grade` is that literature's "is the diversity real?" question made machine-checkable at release time.
+
    **3b. Evidence-disjointness (the stronger, checkable model).** Axis-decorrelation
    grades a property of the *agent* — operator/stack/substrate are declared and not
    cheaply verifiable, and they over-discount: two auditors on identical weights can
